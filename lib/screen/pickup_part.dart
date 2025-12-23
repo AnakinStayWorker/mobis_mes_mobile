@@ -6,8 +6,14 @@ class PickedBox {
   final String partNo;
   final int qty;
   final String serial;
+  final String raw; // 원본 스캔
 
-  PickedBox({required this.partNo, required this.qty, required this.serial});
+  PickedBox({
+    required this.partNo,
+    required this.qty,
+    required this.serial,
+    required this.raw,
+  });
 
   String key() => '$partNo|$serial';
 }
@@ -53,8 +59,7 @@ class _PickupPartPageState extends State<PickupPartPage> {
     return s;
   }
 
-  // 붙어있는 문자열을 P/Q/V/S 토큰 단위로 split
-  // 예: P68464838ABV48671Q56S960240436
+  // 예: P68464838ABV48671Q56S960240436 (붙어서 들어오는 케이스)
   List<String> splitPQVS(String s) {
     final t = s.trim();
     if (t.isEmpty) return [];
@@ -62,9 +67,7 @@ class _PickupPartPageState extends State<PickupPartPage> {
     final idx = <int>[];
     for (int i = 0; i < t.length; i++) {
       final ch = t[i].toUpperCase();
-      if (ch == 'P' || ch == 'Q' || ch == 'V' || ch == 'S') {
-        idx.add(i);
-      }
+      if (ch == 'P' || ch == 'Q' || ch == 'V' || ch == 'S') idx.add(i);
     }
     if (idx.isEmpty) return [];
 
@@ -82,26 +85,21 @@ class _PickupPartPageState extends State<PickupPartPage> {
     return int.tryParse(digits) ?? 0;
   }
 
-  // -----------------------------
-  // Enter 기반 처리
-  // -----------------------------
   Future<void> _onSubmitted(String v) async {
     final text = v.trim();
     if (text.isEmpty) return;
 
-    final tokens = splitPQVS(text);
+    // 입력은 처리 후 비움 (에뮬레이터에서도 유지/테스트가 쉬움)
+    _scanCtrl.clear();
 
+    final tokens = splitPQVS(text);
     if (tokens.isEmpty) {
-      await _popup(
-        'Scan Error',
-        'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text',
-      );
-      _refocusScanBoxField();
+      await _popup('Scan Error', 'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text');
+      _refocus();
       return;
     }
 
     String? p, q, vv, s;
-
     for (final t in tokens) {
       if (t.isEmpty) continue;
       final head = t[0].toUpperCase();
@@ -119,7 +117,7 @@ class _PickupPartPageState extends State<PickupPartPage> {
             'Required: P / Q / V / S\n'
             'Received tokens: ${tokens.join(" ")}',
       );
-      _refocusScanBoxField();
+      _refocus();
       return;
     }
 
@@ -129,34 +127,28 @@ class _PickupPartPageState extends State<PickupPartPage> {
 
     if (qty <= 0) {
       await _popup('Scan Error', 'Invalid Qty from label: $q');
-      _refocusScanBoxField();
+      _refocus();
       return;
     }
 
-    // 선택한 PART_NO와 일치해야 함
     if (part != widget.selectedPartNo.toUpperCase()) {
-      await _popup(
-        'Invalid Part',
-        'Scanned Part# ($part) does not match selected PART_NO (${widget.selectedPartNo}).',
-      );
-      _refocusScanBoxField();
+      await _popup('Invalid Part', 'Scanned Part# ($part) does not match selected PART_NO (${widget.selectedPartNo}).');
+      _refocus();
       return;
     }
 
-    final box = PickedBox(partNo: part, qty: qty, serial: serial);
+    final box = PickedBox(partNo: part, qty: qty, serial: serial, raw: text);
 
-    // 중복 방지 (Part#, Serial# 기준)
     final exists = _boxes.any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (exists) {
       await _popup('Duplicate', 'This box is already scanned.\nPart#: ${box.partNo}\nSerial#: ${box.serial}');
-      _refocusScanBoxField();
+      _refocus();
       return;
     }
 
     setState(() => _boxes.add(box));
-    await _scanSuccessFeedback(); // 성공 피드백
-
-    _refocusScanBoxField();
+    await _scanSuccessFeedback();
+    _refocus();
   }
 
   Future<void> _scanSuccessFeedback() async {
@@ -166,12 +158,8 @@ class _PickupPartPageState extends State<PickupPartPage> {
     } catch (_) {}
   }
 
-  void _refocusScanBoxField() {
-    _scanCtrl.clear();
-
-    // 포커스 튐 방지용으로 한번 정리
+  void _refocus() {
     FocusManager.instance.primaryFocus?.unfocus();
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _scanFocus.requestFocus();
@@ -189,28 +177,27 @@ class _PickupPartPageState extends State<PickupPartPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Selected PART_NO: ${widget.selectedPartNo}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
+            Text('Selected PART_NO: ${widget.selectedPartNo}',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
 
             TextField(
               controller: _scanCtrl,
               focusNode: _scanFocus,
               autofocus: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.done,
               decoration: const InputDecoration(
                 labelText: 'Scan Box Label',
                 border: OutlineInputBorder(),
               ),
-              onSubmitted: (value) => _onSubmitted(value),
+              onSubmitted: _onSubmitted,
             ),
 
             const SizedBox(height: 12),
-            Text(
-              'Scanned Boxes: (Box Count: ${_boxes.length})',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
+            Text('Scanned Boxes: (Box Count: ${_boxes.length})',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
 
             Expanded(
@@ -243,7 +230,7 @@ class _PickupPartPageState extends State<PickupPartPage> {
                     : null,
                 child: const Text('Proceed to Place Part'),
               ),
-            )
+            ),
           ],
         ),
       ),

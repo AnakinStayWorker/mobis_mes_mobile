@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobis_mes_mobile/service/mobis_web_api.dart';
 import 'monitor_part.dart';
@@ -35,7 +36,9 @@ class _PlacePartPageState extends State<PlacePartPage> {
 
   int _scannedQty = 0;
   final List<PickedBox> _scannedBoxes = [];
-  final List<String> _buffer = [];
+
+  // 원본 스캔 로그(Place 단계)
+  final List<String> _placedRawScans = [];
 
   bool _loadingStock = false;
   bool _updating = false;
@@ -44,10 +47,8 @@ class _PlacePartPageState extends State<PlacePartPage> {
   void dispose() {
     _locCtrl.dispose();
     _locFocus.dispose();
-
     _scanCtrl.dispose();
     _scanFocus.dispose();
-
     _currentQtyCtrl.dispose();
     super.dispose();
   }
@@ -72,8 +73,6 @@ class _PlacePartPageState extends State<PlacePartPage> {
     return s;
   }
 
-  // 붙어있는 문자열을 P/Q/V/S 토큰 단위로 split
-  // 예: P04877658AEQ50V22904S000851437
   List<String> splitPQVS(String s) {
     final t = s.trim();
     if (t.isEmpty) return [];
@@ -81,9 +80,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
     final idx = <int>[];
     for (int i = 0; i < t.length; i++) {
       final ch = t[i].toUpperCase();
-      if (ch == 'P' || ch == 'Q' || ch == 'V' || ch == 'S') {
-        idx.add(i);
-      }
+      if (ch == 'P' || ch == 'Q' || ch == 'V' || ch == 'S') idx.add(i);
     }
     if (idx.isEmpty) return [];
 
@@ -97,7 +94,6 @@ class _PlacePartPageState extends State<PlacePartPage> {
   }
 
   int parseQtyFromQ(String qToken) {
-    // qToken 예: "Q100"
     final digits = qToken.replaceAll(RegExp(r'[^0-9]'), '');
     return int.tryParse(digits) ?? 0;
   }
@@ -109,7 +105,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
     final raw = v.trim();
     if (raw.isEmpty) return;
 
-    // P 유무 상관없이 허용, 입력칸에는 prefix 제거값 표시
+    // 입력창에는 prefix 제거값 표시
     final scanned = stripPrefix1(raw).toUpperCase();
     final expected = widget.selectedPartNo.toUpperCase();
 
@@ -141,7 +137,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
       return;
     }
 
-    final apiQty = res.data!.stockQty;
+    final apiQty = res.data!.stockQty; // 음수도 그대로 받음
 
     setState(() {
       _apiCurrentQty = apiQty;
@@ -152,13 +148,12 @@ class _PlacePartPageState extends State<PlacePartPage> {
       // 로케이션 재스캔 시 초기화
       _scannedQty = 0;
       _scannedBoxes.clear();
-      _buffer.clear();
+      _placedRawScans.clear();
     });
 
-    _currentQtyCtrl.text = _currentQty.toString();
+    _currentQtyCtrl.text = _currentQty.toString(); // 음수 그대로 표시
     _scanCtrl.clear();
 
-    // Scan Picked Box Labels 로 자동 포커스 이동
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _scanFocus.requestFocus();
@@ -166,11 +161,13 @@ class _PlacePartPageState extends State<PlacePartPage> {
   }
 
   void _onCurrentQtyChanged(String v) {
-    final n = int.tryParse(v) ?? 0;
-    final val = n < 0 ? 0 : n;
+    // 사용자가 수정한 값은 “그대로” 반영하되,
+    //    Update 시 서버/DB 규칙에 맡긴다 (여기서 0으로 강제 클램프 하지 않음)
+    final n = int.tryParse(v);
+    if (n == null) return;
 
     setState(() {
-      _currentQty = val;
+      _currentQty = n;
       _modified = (_currentQty != _apiCurrentQty);
     });
   }
@@ -182,20 +179,16 @@ class _PlacePartPageState extends State<PlacePartPage> {
     final text = v.trim();
     if (text.isEmpty) return;
 
-    // 토큰 분리
+    _scanCtrl.clear();
+
     final tokens = splitPQVS(text);
     if (tokens.isEmpty) {
-      await _popup(
-        'Scan Error',
-        'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text',
-      );
+      await _popup('Scan Error', 'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text');
       _refocusScanBoxField();
       return;
     }
 
-    // 이번 스캔은 "한 박스 라벨"이므로, 이번 입력에서 바로 P/Q/V/S를 모두 확보해야 함.
     String? p, q, vv, s;
-
     for (final t in tokens) {
       if (t.isEmpty) continue;
       final head = t[0].toUpperCase();
@@ -205,7 +198,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
       else if (head == 'S') s ??= t;
     }
 
-    // P/Q/V/S 모두 없으면 에러 + 처리 중단
+    // P/Q/V/S 모두 필수: 2~3개만 읽힌 경우 반드시 에러
     if (p == null || q == null || vv == null || s == null) {
       await _popup(
         'Scan Error',
@@ -217,20 +210,23 @@ class _PlacePartPageState extends State<PlacePartPage> {
       return;
     }
 
-    // 여기서 한 박스 처리로 바로 넘긴다 (buffer 누적 방식 필요 없음)
-    await _handleOneLabelPqvs(p: p, q: q, v: vv, s: s);
+    await _handleOneLabelPqvs(
+      p: p,
+      q: q,
+      v: vv,
+      s: s,
+      raw: text, // 원본 저장용
+    );
 
     _refocusScanBoxField();
   }
 
-  // ------------------------------------------
-  // 박스 1개 처리 (P/Q/V/S 모두 사용해서 검증)
-  // ------------------------------------------
   Future<void> _handleOneLabelPqvs({
     required String p,
     required String q,
     required String v,
     required String s,
+    required String raw,
   }) async {
     final part = stripPrefix1(p).toUpperCase();
     final qty = parseQtyFromQ(q);
@@ -243,17 +239,15 @@ class _PlacePartPageState extends State<PlacePartPage> {
 
     if (part != widget.selectedPartNo.toUpperCase()) {
       await _popup('Invalid Part', 'Scanned box Part# ($part) does not match (${widget.selectedPartNo}).');
-      _refocusScanBoxField();
       return;
     }
 
-    final box = PickedBox(partNo: part, qty: qty, serial: serial);
+    final box = PickedBox(partNo: part, qty: qty, serial: serial, raw: raw);
 
     // Pickup 단계에서 스캔된 박스인지 확인
     final picked = widget.pickedBoxes.any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (!picked) {
       await _popup('Not Picked', 'This box was not scanned in Pickup step.\nPart#: ${box.partNo}\nSerial#: ${box.serial}');
-      _refocusScanBoxField();
       return;
     }
 
@@ -261,36 +255,60 @@ class _PlacePartPageState extends State<PlacePartPage> {
     final dup = _scannedBoxes.any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (dup) {
       await _popup('Duplicate', 'Already scanned in this step.\nPart#: ${box.partNo}\nSerial#: ${box.serial}');
-      _refocusScanBoxField();
       return;
     }
 
     setState(() {
       _scannedBoxes.add(box);
       _scannedQty += box.qty;
+      _placedRawScans.add(raw); // 원본 스캔 저장
     });
 
-    await _scanSuccessFeedback(); // 성공 피드백
+    await _scanSuccessFeedback();
 
-    // 아직 스캔할 박스가 남아있으면 즉시 다음 스캔 준비
+    // 아직 스캔할 박스 남아있으면 바로 다음 스캔 준비
     final remaining = widget.pickedBoxes.length - _scannedBoxes.length;
-    if (remaining > 0) {
-      _refocusScanBoxField();
-    }
+    if (remaining > 0) _refocusScanBoxField();
   }
 
-  // -----------------------------
-  // Update Stock
-  // -----------------------------
   Future<void> _updateStock() async {
     if (_updating) return;
+
+    // Update 시점에 Current Stock 음수 금지
+    if (_currentQty < 0) {
+      await _popup(
+        'Invalid Qty',
+        'Current Stock Qty cannot be negative when updating.\n'
+            'Please correct it to 0 or higher.',
+      );
+      // 다시 Current Stock 편집칸으로 포커스
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+      });
+      return;
+    }
 
     final editQty = _currentQty - _apiCurrentQty;
     final totalQty = _currentQty + _scannedQty;
 
-    setState(() {
-      _updating = true;
+    // Total도 안전하게
+    if (totalQty < 0) {
+      await _popup(
+        'Invalid Total',
+        'Total Qty cannot be negative.\n'
+            'Current: $_currentQty, Scanned: $_scannedQty',
+      );
+      return;
+    }
+
+    // 로그로 남길 barcode payload
+    final barcodePayload = jsonEncode({
+      'locationPartNo': _locCtrl.text,
+      'pickedRawScans': widget.pickedBoxes.map((b) => b.raw).toList(),
+      'placedRawScans': _placedRawScans,
     });
+
+    setState(() => _updating = true);
 
     final r = await MobisWebApi.updateStock(
       partNo: widget.selectedPartNo,
@@ -298,13 +316,12 @@ class _PlacePartPageState extends State<PlacePartPage> {
       editQty: editQty,
       scannedQty: _scannedQty,
       totalQty: totalQty,
+      requestBarcodeJson: barcodePayload,
     );
 
     if (!mounted) return;
 
-    setState(() {
-      _updating = false;
-    });
+    setState(() => _updating = false);
 
     if (r.resultCode == '00') {
       await _popup('Success', 'Stock updated successfully.');
@@ -315,6 +332,8 @@ class _PlacePartPageState extends State<PlacePartPage> {
       );
     } else {
       await _popup('Failed', 'ResultCode: ${r.resultCode}\n${r.resultMessage}');
+      // 실패해도 다시 스캔 가능 상태로
+      if (_locationOk) _refocusScanBoxField();
     }
   }
 
@@ -327,10 +346,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
 
   void _refocusScanBoxField() {
     _scanCtrl.clear();
-
-    // 포커스 튐 방지용으로 한번 정리
     FocusManager.instance.primaryFocus?.unfocus();
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _scanFocus.requestFocus();
@@ -350,21 +366,22 @@ class _PlacePartPageState extends State<PlacePartPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Selected PART_NO: ${widget.selectedPartNo}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
+            Text('Selected PART_NO: ${widget.selectedPartNo}',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
 
             TextField(
               controller: _locCtrl,
               focusNode: _locFocus,
               autofocus: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.done,
               decoration: const InputDecoration(
                 labelText: 'Scan Location PART_NO',
                 border: OutlineInputBorder(),
               ),
-              onSubmitted: (value) => _onLocationSubmitted(value),
+              onSubmitted: _onLocationSubmitted,
             ),
 
             const SizedBox(height: 10),
@@ -416,7 +433,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
                 labelText: 'Scan Picked Box Labels',
                 border: OutlineInputBorder(),
               ),
-              onSubmitted: (value) => _onBoxSubmitted(value),
+              onSubmitted: _onBoxSubmitted,
             ),
 
             const SizedBox(height: 10),

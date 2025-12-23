@@ -128,22 +128,6 @@ class _MainMenuViewState extends State<MainMenuView> {
             children: [
               const SizedBox(height: 60),
 
-              // 기존
-              _menuButton(
-                text: "Inventory Check",
-                onPressed: () async {
-                  final ok = await AuthSession.ensureAliveOrLogin(context);
-                  if (!ok) return;
-
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const InventoryCheckPage()),
-                  );
-                },
-              ),
-
-              const SizedBox(height: 25),
-
               // Monitor Part
               _menuButton(
                 text: "Monitor Part",
@@ -154,6 +138,21 @@ class _MainMenuViewState extends State<MainMenuView> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const MonitorPartPage()),
+                  );
+                },
+              ),
+
+              const SizedBox(height: 25),
+
+              _menuButton(
+                text: "Inventory Check",
+                onPressed: () async {
+                  final ok = await AuthSession.ensureAliveOrLogin(context);
+                  if (!ok) return;
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const InventoryCheckPage()),
                   );
                 },
               ),

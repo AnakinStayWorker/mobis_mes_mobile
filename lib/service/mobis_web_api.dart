@@ -378,6 +378,7 @@ class MobisWebApi {
     required int editQty,
     required int scannedQty,
     required int totalQty,
+    String? requestBarcodeJson,
   }) async {
     final deviceId = await _storage.read(key: 'DeviceId') ?? 'unknown';
     final userId = await _storage.read(key: 'UserId') ?? '';
@@ -393,6 +394,7 @@ class MobisWebApi {
         'scannedQty': scannedQty,
         'totalQty': totalQty,
         'deviceId': deviceId,
+        'requestBarcodeJson': requestBarcodeJson ?? '',
       },
     );
 
@@ -402,6 +404,7 @@ class MobisWebApi {
 
     return UpdateStockResult(resultCode: rc, resultMessage: rm);
   }
+
 
   // --------------------------- Authed helpers ---------------------------
 
