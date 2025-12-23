@@ -326,10 +326,18 @@ class _PlacePartPageState extends State<PlacePartPage> {
     if (r.resultCode == '00') {
       await _popup('Success', 'Stock updated successfully.');
       if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
+
+      // Navigator.of(context).pushAndRemoveUntil(
+      //   MaterialPageRoute(builder: (_) => const MonitorPartPage()),
+      //       (route) => false,
+      // );
+
+      // 성공 후 Monitor 화면으로 돌아가되, 메인메뉴로 돌아갈 수 있도록 네비게이션 스택을 유지한다.
+      Navigator.of(context).popUntil((route) => route.isFirst);
+      Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => const MonitorPartPage()),
-            (route) => false,
       );
+
     } else {
       await _popup('Failed', 'ResultCode: ${r.resultCode}\n${r.resultMessage}');
       // 실패해도 다시 스캔 가능 상태로
