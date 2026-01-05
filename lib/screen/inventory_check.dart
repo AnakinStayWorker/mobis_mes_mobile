@@ -135,7 +135,7 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
                         autofocus: true,
                         textInputAction: TextInputAction.search,
                         decoration: const InputDecoration(
-                          labelText: 'Scan / Enter PART_NO (P optional)',
+                          labelText: 'Enter PART_NO',
                           border: OutlineInputBorder(),
                           prefixIcon: Icon(Icons.qr_code_scanner),
                         ),
@@ -231,7 +231,7 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
                             const Text('Sequence / Time', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 8),
                             _kv('SEQ_IDX', _s(info.seqIdx)),
-                            _kv('SUBTRACTION_TIME', _s(info.subtractionTime)),
+                            _kv('DEDUCTION_TIME', _s(info.subtractionTime)),
                             _kv('ADDITION_TIME', _s(info.additionTime)),
                             _kv('USE_FLAG', _s(info.useFlag)),
                           ],
