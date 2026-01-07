@@ -20,7 +20,14 @@ class PickedBox {
 
 class PickupPartPage extends StatefulWidget {
   final String selectedPartNo;
-  const PickupPartPage({super.key, required this.selectedPartNo});
+
+  final String selectedPcCode;
+
+  const PickupPartPage({
+    super.key,
+    required this.selectedPartNo,
+    required this.selectedPcCode,
+  });
 
   @override
   State<PickupPartPage> createState() => _PickupPartPageState();
@@ -46,7 +53,9 @@ class _PickupPartPageState extends State<PickupPartPage> {
       builder: (c) => AlertDialog(
         title: Text(title),
         content: Text(msg),
-        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))
+        ],
       ),
     );
   }
@@ -94,7 +103,8 @@ class _PickupPartPageState extends State<PickupPartPage> {
 
     final tokens = splitPQVS(text);
     if (tokens.isEmpty) {
-      await _popup('Scan Error', 'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text');
+      await _popup('Scan Error',
+          'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text');
       _refocus();
       return;
     }
@@ -131,8 +141,12 @@ class _PickupPartPageState extends State<PickupPartPage> {
       return;
     }
 
+    // CHANGED: selectedPartNo 비교는 그대로(픽업 라벨은 기존 P/Q/V/S 규격 유지)
     if (part != widget.selectedPartNo.toUpperCase()) {
-      await _popup('Invalid Part', 'Scanned Part# ($part) does not match selected PART_NO (${widget.selectedPartNo}).');
+      await _popup(
+        'Invalid Part',
+        'Scanned Part# ($part) does not match selected PART_NO (${widget.selectedPartNo}).',
+      );
       _refocus();
       return;
     }
@@ -141,7 +155,10 @@ class _PickupPartPageState extends State<PickupPartPage> {
 
     final exists = _boxes.any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (exists) {
-      await _popup('Duplicate', 'This box is already scanned.\nPart#: ${box.partNo}\nSerial#: ${box.serial}');
+      await _popup(
+        'Duplicate',
+        'This box is already scanned.\nPart#: ${box.partNo}\nSerial#: ${box.serial}',
+      );
       _refocus();
       return;
     }
@@ -177,8 +194,10 @@ class _PickupPartPageState extends State<PickupPartPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Selected PART_NO: ${widget.selectedPartNo}',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(
+              'Selected: ${widget.selectedPartNo}  |  ${widget.selectedPcCode}',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 12),
 
             TextField(
@@ -196,8 +215,10 @@ class _PickupPartPageState extends State<PickupPartPage> {
             ),
 
             const SizedBox(height: 12),
-            Text('Scanned Boxes: (Box Count: ${_boxes.length})',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              'Scanned Boxes: (Box Count: ${_boxes.length})',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 8),
 
             Expanded(
@@ -222,6 +243,7 @@ class _PickupPartPageState extends State<PickupPartPage> {
                     MaterialPageRoute(
                       builder: (_) => PlacePartPage(
                         selectedPartNo: widget.selectedPartNo,
+                        selectedPcCode: widget.selectedPcCode,
                         pickedBoxes: _boxes,
                       ),
                     ),

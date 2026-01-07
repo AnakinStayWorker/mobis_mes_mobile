@@ -350,11 +350,12 @@ class MobisWebApi {
     return StockDepletionResult(resultCode: rc, resultMessage: rm, items: items);
   }
 
-  static Future<CurrentStockInfoResult> getPartStock(String partNo) async {
+  static Future<CurrentStockInfoResult> getPartStock(String partNo, String pcCode) async {
     final deviceId = await _storage.read(key: 'DeviceId') ?? 'unknown';
 
     final resp = await authedGet(
-      'Inventory/part-stock/$partNo',
+      // URL에 pcCode 추가
+      'Inventory/part-stock/$partNo/$pcCode',
       extraHeaders: {'X-Device-Id': deviceId},
     );
 
@@ -374,6 +375,7 @@ class MobisWebApi {
 
   static Future<UpdateStockResult> updateStock({
     required String partNo,
+    required String pcCode,
     required int currentQty,
     required int editQty,
     required int scannedQty,
@@ -388,6 +390,7 @@ class MobisWebApi {
       extraHeaders: {'X-Device-Id': deviceId},
       body: {
         'partNo': partNo,
+        'pcCode': pcCode,
         'userId': userId,
         'currentQty': currentQty,
         'editQty': editQty,

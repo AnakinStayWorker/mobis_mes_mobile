@@ -1,11 +1,13 @@
 class StockDepletionItem {
   final String partnmCode;
+  final String pcCode;
   final String partNo;
   final int stockQty;
   final double? minutesToZero;
 
   StockDepletionItem({
     required this.partnmCode,
+    required this.pcCode,
     required this.partNo,
     required this.stockQty,
     required this.minutesToZero,
@@ -31,6 +33,16 @@ class StockDepletionItem {
 
   /// 어떤 형태로 와도 파싱
   factory StockDepletionItem.fromAny(dynamic raw) {
+    if (raw is! Map) {
+      return StockDepletionItem(
+        partnmCode: '',
+        pcCode: '',
+        partNo: '',
+        stockQty: 0,
+        minutesToZero: null,
+      );
+    }
+
     final m = raw as Map;
     final j = <String, dynamic>{};
     for (final e in m.entries) {
@@ -38,12 +50,14 @@ class StockDepletionItem {
     }
 
     final partnm = _asString(_getByNorm(j, 'partnmcode'));
+    final pcCode = _asString(_getByNorm(j, 'pccode'));
     final partNo = _asString(_getByNorm(j, 'partno'));
     final stockQty = _asInt(_getByNorm(j, 'stockqty'));
     final min = _asDouble(_getByNorm(j, 'minutestozero'));
 
     return StockDepletionItem(
       partnmCode: partnm,
+      pcCode: pcCode,
       partNo: partNo,
       stockQty: stockQty,
       minutesToZero: min,
@@ -57,17 +71,6 @@ class StockDepletionResult {
   final String resultMessage;
   final List<StockDepletionItem> items;
   StockDepletionResult({required this.resultCode, required this.resultMessage, required this.items});
-}
-
-class PartStockInfo {
-  final String partNo;
-  final int stockQty;
-  PartStockInfo({required this.partNo, required this.stockQty});
-
-  factory PartStockInfo.fromJson(Map<String, dynamic> j) => PartStockInfo(
-    partNo: (j['PART_NO'] ?? j['partNo'] ?? '').toString(),
-    stockQty: int.tryParse((j['STOCK_QTY'] ?? j['stockQty'] ?? 0).toString()) ?? 0,
-  );
 }
 
 class UpdateStockResult {

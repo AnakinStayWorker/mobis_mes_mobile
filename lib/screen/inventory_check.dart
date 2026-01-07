@@ -19,6 +19,10 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
   String? _err;
   CurrentStockInfo? _info;
 
+  // 마지막 스캔 표시용
+  String? _lastCoreBarcode; // ex) P04877659AELFF010_PC01 (정규화된 22자)
+  String? _lastParsedDisplay; // ex) 04877659AE | FF010_PC01
+
   @override
   void dispose() {
     _partCtrl.dispose();
@@ -33,42 +37,98 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
       builder: (c) => AlertDialog(
         title: Text(title),
         content: Text(msg),
-        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))
+        ],
       ),
     );
   }
 
-  String _stripPrefixP(String raw) {
-    final s = raw.trim();
-    if (s.length >= 2 && (s[0] == 'P' || s[0] == 'p')) return s.substring(1);
-    return s;
+  void _refocusAndClearInput() {
+    _partCtrl.clear();
+    FocusManager.instance.primaryFocus?.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _partFocus.requestFocus();
+    });
+  }
+
+  // Location 바코드(P+10 + L+10) 파싱
+  // 예: P04877659AELFF010_PC01 (QR 뒤에 쓰레기/개행 있어도 앞 22자만 사용)
+  Map<String, String>? _parsePartPcCodeBarcode(String raw) {
+    if (raw.isEmpty) return null;
+
+    // 1) 개행/탭 포함 공백 제거 + 대문자
+    final s = raw.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+
+    // 2) 최소 길이 체크 (P + 10 + L + 10)
+    if (s.length < 22) return null;
+
+    // 3) 앞 22자만 사용 (QR 뒤에 쓰레기 붙어도 무시)
+    final core = s.substring(0, 22);
+
+    // 4) 고정 포맷 검증
+    if (core[0] != 'P') return null;
+    if (core[11] != 'L') return null;
+
+    final partNo = core.substring(1, 11);
+    final pcCode = core.substring(12, 22);
+
+    return {
+      'core': core,
+      'partNo': partNo,
+      'pcCode': pcCode,
+    };
   }
 
   Future<void> _search(String input) async {
     final raw = input.trim();
     if (raw.isEmpty) return;
 
-    // P 유무 상관없이 처리, 입력창에는 P 제거된 값 표시
-    final partNo = _stripPrefixP(raw).toUpperCase();
-    _partCtrl.text = partNo;
+    final parsed = _parsePartPcCodeBarcode(raw);
+    if (parsed == null) {
+      setState(() {
+        _err =
+        'Invalid barcode. Expected: P{10-digit PART_NO}L{10-digit PC_CODE}\n'
+            'Example: P04877659AELFF010_PC01\n'
+            'Received: $raw';
+        _info = null;
+        _lastCoreBarcode = null;
+        _lastParsedDisplay = null;
+      });
+      await _popup('Scan Error', _err!);
+      _refocusAndClearInput();
+      return;
+    }
 
+    final core = parsed['core']!;
+    final partNo = parsed['partNo']!.toUpperCase();
+    final pcCode = parsed['pcCode']!.toUpperCase();
+
+    // 입력창은 비우고, 아래에 스캔값 표시
     setState(() {
       _loading = true;
       _err = null;
       _info = null;
+
+      _lastCoreBarcode = core;
+      _lastParsedDisplay = '$partNo | $pcCode';
     });
+    _refocusAndClearInput();
 
     try {
-      final res = await MobisWebApi.getPartStock(partNo);
+      final res = await MobisWebApi.getPartStock(partNo, pcCode);
       if (!mounted) return;
 
       if (res.resultCode != '00' || res.data == null) {
         setState(() {
           _loading = false;
-          _err = '(${res.resultCode}) ${res.resultMessage.isNotEmpty ? res.resultMessage : 'Failed to load.'}';
+          _err = '(${res.resultCode}) '
+              '${res.resultMessage.isNotEmpty ? res.resultMessage : 'Failed to load.'}';
+          _info = null;
         });
         await _popup('Failed', _err!);
-        _partFocus.requestFocus();
+        _refocusAndClearInput();
         return;
       }
 
@@ -87,9 +147,10 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
       setState(() {
         _loading = false;
         _err = 'Network/Parsing error: $e';
+        _info = null;
       });
       await _popup('Error', _err!);
-      _partFocus.requestFocus();
+      _refocusAndClearInput();
     }
   }
 
@@ -121,53 +182,74 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            // Search Bar
             Card(
               elevation: 1,
               child: Padding(
                 padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _partCtrl,
-                        focusNode: _partFocus,
-                        autofocus: true,
-                        textInputAction: TextInputAction.search,
-                        decoration: const InputDecoration(
-                          labelText: 'Enter PART_NO',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.qr_code_scanner),
-                        ),
-                        onSubmitted: _search,
+                child: TextField(
+                  controller: _partCtrl,
+                  focusNode: _partFocus,
+                  autofocus: true,
+                  textInputAction: TextInputAction.search,
+                  decoration: InputDecoration(
+                    labelText: 'Scan Barcode (P{PART_NO}L{PC_CODE})',
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.qr_code_scanner),
+                    suffixIcon: _loading
+                        ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    SizedBox(
-                      height: 48,
-                      child: ElevatedButton.icon(
-                        onPressed: _loading ? null : () => _search(_partCtrl.text),
-                        icon: _loading
-                            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.search),
-                        label: const Text('Search'),
-                      ),
-                    ),
-                  ],
+                    )
+                        : null,
+                  ),
+                  onSubmitted: _search,
                 ),
               ),
             ),
 
+            // 마지막 스캔 표시
+            if (_lastCoreBarcode != null || _lastParsedDisplay != null) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Scanned Barcode:',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              if (_lastCoreBarcode != null)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _lastCoreBarcode!,
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade800),
+                  ),
+                ),
+            ],
+
             const SizedBox(height: 12),
 
             if (_err != null)
-              Text(_err!, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600)),
+              Text(
+                _err!,
+                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600),
+              ),
 
             if (info == null && !_loading)
               Expanded(
                 child: Center(
                   child: Text(
-                    'Enter PART_NO and press Search.',
+                    'Scan barcode (P{PART_NO}L{PC_CODE}).',
+                    textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.grey.shade700),
                   ),
                 ),
@@ -177,7 +259,6 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
               Expanded(
                 child: ListView(
                   children: [
-                    // Summary
                     Card(
                       elevation: 1,
                       child: Padding(
@@ -185,7 +266,8 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Summary', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            const Text('Summary',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 8),
                             _kv('PART_NO', _s(info.partNo)),
                             _kv('PARTNM_CODE', _s(info.partnmCode)),
@@ -195,10 +277,7 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 10),
-
-                    // Location/Work
                     Card(
                       elevation: 1,
                       child: Padding(
@@ -206,7 +285,8 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Line / Work', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            const Text('Line / Work',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 8),
                             _kv('LINE_CODE', _s(info.lineCode)),
                             _kv('PC_CODE', _s(info.pcCode)),
@@ -217,10 +297,7 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 10),
-
-                    // Sequence / Times
                     Card(
                       elevation: 1,
                       child: Padding(
@@ -228,7 +305,8 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Sequence / Time', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            const Text('Sequence / Time',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 8),
                             _kv('SEQ_IDX', _s(info.seqIdx)),
                             _kv('DEDUCTION_TIME', _s(info.subtractionTime)),

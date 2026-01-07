@@ -55,7 +55,7 @@ class _MonitorPartPageState extends State<MonitorPartPage> {
         _err = null;
       });
     } else {
-      // silent 모드: 기존 리스트는 유지, 에러도 즉시 지우지 않음
+      // silent 모드: 기존 리스트는 유지
       _loading = true;
     }
 
@@ -67,17 +67,18 @@ class _MonitorPartPageState extends State<MonitorPartPage> {
 
       if (res.resultCode == '00') {
         _rows = res.items;
-        _err = null; // 성공하면 에러 초기화
+        _err = null;
       } else {
         // 자동 갱신 실패 시: 기존 rows는 유지
-        _err = res.resultMessage.isNotEmpty ? res.resultMessage : 'Failed to load.';
+        _err = res.resultMessage.isNotEmpty
+            ? res.resultMessage
+            : 'Failed to load.';
       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // 최초 로딩
     final showFirstLoading = _loading && _rows.isEmpty;
 
     return Scaffold(
@@ -90,21 +91,29 @@ class _MonitorPartPageState extends State<MonitorPartPage> {
         onRefresh: () => _load(silent: false),
         child: ListView.separated(
           itemCount: _rows.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
+          separatorBuilder: (_, __) =>
+          const Divider(height: 1),
           itemBuilder: (ctx, i) {
             final r = _rows[i];
             final m = r.minutesToZero;
+
             return ListTile(
-              title: Text('${r.partnmCode}  |  ${r.partNo}'),
+              title: Text('${r.partNo}  |  ${r.pcCode}'),
               subtitle: Text('Stock: ${r.stockQty}'),
               trailing: Text(
                 m == null ? '-' : '${m.toStringAsFixed(1)} min',
-                style: TextStyle(fontWeight: FontWeight.bold, color: _minutesColor(m)),
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: _minutesColor(m),
+                ),
               ),
               onTap: () {
                 Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (_) => PickupPartPage(selectedPartNo: r.partNo),
+                    builder: (_) => PickupPartPage(
+                      selectedPartNo: r.partNo,
+                      selectedPcCode: r.pcCode,
+                    ),
                   ),
                 );
               },

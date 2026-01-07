@@ -7,11 +7,13 @@ import 'package:flutter/services.dart';
 
 class PlacePartPage extends StatefulWidget {
   final String selectedPartNo;
+  final String selectedPcCode;
   final List<PickedBox> pickedBoxes;
 
   const PlacePartPage({
     super.key,
     required this.selectedPartNo,
+    required this.selectedPcCode,
     required this.pickedBoxes,
   });
 
@@ -40,6 +42,9 @@ class _PlacePartPageState extends State<PlacePartPage> {
   // 원본 스캔 로그(Place 단계)
   final List<String> _placedRawScans = [];
 
+  // Location QR를 사람이 보기 좋게 해석한 값 (PART|PC)
+  String? _locationParsedDisplay; // ex) 04877659AE | FF010_PC01
+
   bool _loadingStock = false;
   bool _updating = false;
 
@@ -60,7 +65,9 @@ class _PlacePartPageState extends State<PlacePartPage> {
       builder: (c) => AlertDialog(
         title: Text(title),
         content: Text(msg),
-        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))
+        ],
       ),
     );
   }
@@ -98,22 +105,80 @@ class _PlacePartPageState extends State<PlacePartPage> {
     return int.tryParse(digits) ?? 0;
   }
 
+  // Location 바코드(P+10 + L+10) 파싱
+  // 예: P04877659AELFF010_PC01  (+ QR 뒤에 쓰레기/개행이 있어도 앞 22자만 사용)
+  Map<String, String>? _parsePartPcBarcode(String raw) {
+    if (raw.isEmpty) return null;
+
+    // 개행/탭 포함 공백 제거 + 대문자
+    final s = raw.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+
+    // 최소 길이 체크 (P + 10 + L + 10)
+    if (s.length < 22) return null;
+
+    // 앞 22자만 사용 (QR 뒤에 쓰레기 붙어도 무시)
+    final core = s.substring(0, 22);
+
+    // 고정 포맷 검증
+    if (core[0] != 'P') return null;
+    if (core[11] != 'L') return null;
+
+    final partNo = core.substring(1, 11);
+    final pcCode = core.substring(12, 22);
+
+    return {
+      'core': core, // 입력창에 그대로 표시할 "정규화 원문"
+      'partNo': partNo,
+      'pcCode': pcCode,
+    };
+  }
+
   // -----------------------------
-  // Location PART_NO (Enter 기반)
+  // Location (Enter 기반)
   // -----------------------------
   Future<void> _onLocationSubmitted(String v) async {
     final raw = v.trim();
     if (raw.isEmpty) return;
 
-    // 입력창에는 prefix 제거값 표시
-    final scanned = stripPrefix1(raw).toUpperCase();
-    final expected = widget.selectedPartNo.toUpperCase();
-
-    _locCtrl.text = scanned;
-
-    if (scanned != expected) {
-      await _popup('Wrong Location', 'Location PART_NO ($scanned) does not match selected part ($expected).');
+    final parsed = _parsePartPcBarcode(raw);
+    if (parsed == null) {
+      await _popup(
+        'Scan Error',
+        'Invalid location barcode.\n'
+            'Expected: P{10-digit PART_NO}L{10-digit PC_CODE}\n'
+            'Example: P04877659AELFF010_PC01\n'
+            'Received: $raw',
+      );
       _locCtrl.clear();
+      _locationParsedDisplay = null;
+      _locFocus.requestFocus();
+      return;
+    }
+
+    final core = parsed['core']!;
+    final scannedPart = parsed['partNo']!.toUpperCase();
+    final scannedPcCode = parsed['pcCode']!.toUpperCase();
+
+    final expectedPart = widget.selectedPartNo.toUpperCase();
+    final expectedPcCode = widget.selectedPcCode.toUpperCase();
+
+    // 입력창에는 "스캔한 바코드 원문(정규화된 22자)" 그대로 표시
+    _locCtrl.text = core;
+
+    // 보조 표시(한 줄): 사람이 보기 쉽게 PART|PC
+    setState(() {
+      _locationParsedDisplay = '$scannedPart | $scannedPcCode';
+    });
+
+    if (scannedPart != expectedPart || scannedPcCode != expectedPcCode) {
+      await _popup(
+        'Wrong Location',
+        'Scanned Location does not match selected.\n'
+            'Scanned: $scannedPart | $scannedPcCode\n'
+            'Selected: $expectedPart | $expectedPcCode',
+      );
+      _locCtrl.clear();
+      setState(() => _locationParsedDisplay = null);
       _locFocus.requestFocus();
       return;
     }
@@ -123,7 +188,10 @@ class _PlacePartPageState extends State<PlacePartPage> {
       _loadingStock = true;
     });
 
-    final res = await MobisWebApi.getPartStock(widget.selectedPartNo);
+    final res = await MobisWebApi.getPartStock(
+      widget.selectedPartNo,
+      widget.selectedPcCode,
+    );
 
     if (!mounted) return;
 
@@ -132,7 +200,8 @@ class _PlacePartPageState extends State<PlacePartPage> {
         _loadingStock = false;
         _locationOk = false;
       });
-      await _popup('Error', 'GetPartStock failed. (${res.resultCode}) ${res.resultMessage}');
+      await _popup('Error',
+          'GetPartStock failed. (${res.resultCode}) ${res.resultMessage}');
       _locFocus.requestFocus();
       return;
     }
@@ -151,7 +220,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
       _placedRawScans.clear();
     });
 
-    _currentQtyCtrl.text = _currentQty.toString(); // 음수 그대로 표시
+    _currentQtyCtrl.text = _currentQty.toString();
     _scanCtrl.clear();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -161,8 +230,6 @@ class _PlacePartPageState extends State<PlacePartPage> {
   }
 
   void _onCurrentQtyChanged(String v) {
-    // 사용자가 수정한 값은 “그대로” 반영하되,
-    //    Update 시 서버/DB 규칙에 맡긴다 (여기서 0으로 강제 클램프 하지 않음)
     final n = int.tryParse(v);
     if (n == null) return;
 
@@ -183,7 +250,10 @@ class _PlacePartPageState extends State<PlacePartPage> {
 
     final tokens = splitPQVS(text);
     if (tokens.isEmpty) {
-      await _popup('Scan Error', 'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text');
+      await _popup(
+        'Scan Error',
+        'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text',
+      );
       _refocusScanBoxField();
       return;
     }
@@ -198,7 +268,6 @@ class _PlacePartPageState extends State<PlacePartPage> {
       else if (head == 'S') s ??= t;
     }
 
-    // P/Q/V/S 모두 필수: 2~3개만 읽힌 경우 반드시 에러
     if (p == null || q == null || vv == null || s == null) {
       await _popup(
         'Scan Error',
@@ -215,7 +284,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
       q: q,
       v: vv,
       s: s,
-      raw: text, // 원본 저장용
+      raw: text,
     );
 
     _refocusScanBoxField();
@@ -238,35 +307,45 @@ class _PlacePartPageState extends State<PlacePartPage> {
     }
 
     if (part != widget.selectedPartNo.toUpperCase()) {
-      await _popup('Invalid Part', 'Scanned box Part# ($part) does not match (${widget.selectedPartNo}).');
+      await _popup(
+        'Invalid Part',
+        'Scanned box Part# ($part) does not match (${widget.selectedPartNo}).',
+      );
       return;
     }
 
     final box = PickedBox(partNo: part, qty: qty, serial: serial, raw: raw);
 
     // Pickup 단계에서 스캔된 박스인지 확인
-    final picked = widget.pickedBoxes.any((b) => b.partNo == box.partNo && b.serial == box.serial);
+    final picked = widget.pickedBoxes
+        .any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (!picked) {
-      await _popup('Not Picked', 'This box was not scanned in Pickup step.\nPart#: ${box.partNo}\nSerial#: ${box.serial}');
+      await _popup(
+        'Not Picked',
+        'This box was not scanned in Pickup step.\nPart#: ${box.partNo}\nSerial#: ${box.serial}',
+      );
       return;
     }
 
     // Place 단계 중복 방지
-    final dup = _scannedBoxes.any((b) => b.partNo == box.partNo && b.serial == box.serial);
+    final dup = _scannedBoxes
+        .any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (dup) {
-      await _popup('Duplicate', 'Already scanned in this step.\nPart#: ${box.partNo}\nSerial#: ${box.serial}');
+      await _popup(
+        'Duplicate',
+        'Already scanned in this step.\nPart#: ${box.partNo}\nSerial#: ${box.serial}',
+      );
       return;
     }
 
     setState(() {
       _scannedBoxes.add(box);
       _scannedQty += box.qty;
-      _placedRawScans.add(raw); // 원본 스캔 저장
+      _placedRawScans.add(raw);
     });
 
     await _scanSuccessFeedback();
 
-    // 아직 스캔할 박스 남아있으면 바로 다음 스캔 준비
     final remaining = widget.pickedBoxes.length - _scannedBoxes.length;
     if (remaining > 0) _refocusScanBoxField();
   }
@@ -274,24 +353,18 @@ class _PlacePartPageState extends State<PlacePartPage> {
   Future<void> _updateStock() async {
     if (_updating) return;
 
-    // Update 시점에 Current Stock 음수 금지
     if (_currentQty < 0) {
       await _popup(
         'Invalid Qty',
         'Current Stock Qty cannot be negative when updating.\n'
             'Please correct it to 0 or higher.',
       );
-      // 다시 Current Stock 편집칸으로 포커스
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-      });
       return;
     }
 
     final editQty = _currentQty - _apiCurrentQty;
     final totalQty = _currentQty + _scannedQty;
 
-    // Total도 안전하게
     if (totalQty < 0) {
       await _popup(
         'Invalid Total',
@@ -301,9 +374,9 @@ class _PlacePartPageState extends State<PlacePartPage> {
       return;
     }
 
-    // 로그로 남길 barcode payload
     final barcodePayload = jsonEncode({
-      'locationPartNo': _locCtrl.text,
+      'locationPartNo': widget.selectedPartNo,
+      'pcCode': widget.selectedPcCode,
       'pickedRawScans': widget.pickedBoxes.map((b) => b.raw).toList(),
       'placedRawScans': _placedRawScans,
     });
@@ -312,6 +385,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
 
     final r = await MobisWebApi.updateStock(
       partNo: widget.selectedPartNo,
+      pcCode: widget.selectedPcCode,
       currentQty: _currentQty,
       editQty: editQty,
       scannedQty: _scannedQty,
@@ -327,20 +401,12 @@ class _PlacePartPageState extends State<PlacePartPage> {
       await _popup('Success', 'Stock updated successfully.');
       if (!mounted) return;
 
-      // Navigator.of(context).pushAndRemoveUntil(
-      //   MaterialPageRoute(builder: (_) => const MonitorPartPage()),
-      //       (route) => false,
-      // );
-
-      // 성공 후 Monitor 화면으로 돌아가되, 메인메뉴로 돌아갈 수 있도록 네비게이션 스택을 유지한다.
       Navigator.of(context).popUntil((route) => route.isFirst);
       Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => const MonitorPartPage()),
       );
-
     } else {
       await _popup('Failed', 'ResultCode: ${r.resultCode}\n${r.resultMessage}');
-      // 실패해도 다시 스캔 가능 상태로
       if (_locationOk) _refocusScanBoxField();
     }
   }
@@ -364,7 +430,8 @@ class _PlacePartPageState extends State<PlacePartPage> {
   @override
   Widget build(BuildContext context) {
     final totalQty = _currentQty + _scannedQty;
-    final scannedAll = _scannedBoxes.length == widget.pickedBoxes.length && widget.pickedBoxes.isNotEmpty;
+    final scannedAll = _scannedBoxes.length == widget.pickedBoxes.length &&
+        widget.pickedBoxes.isNotEmpty;
     final canUpdate = _locationOk && scannedAll && !_loadingStock && !_updating;
 
     return Scaffold(
@@ -374,8 +441,10 @@ class _PlacePartPageState extends State<PlacePartPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Selected PART_NO: ${widget.selectedPartNo}',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(
+              'Selected: ${widget.selectedPartNo} | ${widget.selectedPcCode}',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 10),
 
             TextField(
@@ -386,11 +455,20 @@ class _PlacePartPageState extends State<PlacePartPage> {
               enableSuggestions: false,
               textInputAction: TextInputAction.done,
               decoration: const InputDecoration(
-                labelText: 'Scan Location PART_NO',
+                labelText: 'Scan Location Barcode (P{PartNo}L{PcCode})',
                 border: OutlineInputBorder(),
               ),
               onSubmitted: _onLocationSubmitted,
             ),
+
+            // Parsed display line (PART|PC)
+            if (_locationParsedDisplay != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Parsed: $_locationParsedDisplay',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+              ),
+            ],
 
             const SizedBox(height: 10),
             if (_loadingStock) const LinearProgressIndicator(),
@@ -414,14 +492,20 @@ class _PlacePartPageState extends State<PlacePartPage> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: InputDecorator(
-                    decoration: const InputDecoration(labelText: 'Scanned Qty', border: OutlineInputBorder()),
+                    decoration: const InputDecoration(
+                      labelText: 'Scanned Qty',
+                      border: OutlineInputBorder(),
+                    ),
                     child: Text('$_scannedQty'),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: InputDecorator(
-                    decoration: const InputDecoration(labelText: 'Total Qty', border: OutlineInputBorder()),
+                    decoration: const InputDecoration(
+                      labelText: 'Total Qty',
+                      border: OutlineInputBorder(),
+                    ),
                     child: Text('$totalQty'),
                   ),
                 ),
@@ -458,7 +542,9 @@ class _PlacePartPageState extends State<PlacePartPage> {
                   final b = _scannedBoxes[i];
                   return ListTile(
                     dense: true,
-                    title: Text('Part#: ${b.partNo} | Qty: ${b.qty} | Serial#: ${b.serial}'),
+                    title: Text(
+                      'Part#: ${b.partNo} | Qty: ${b.qty} | Serial#: ${b.serial}',
+                    ),
                   );
                 },
               ),
@@ -468,7 +554,8 @@ class _PlacePartPageState extends State<PlacePartPage> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: canUpdate ? _updateStock : null,
-                child: _updating ? const Text('Updating...') : const Text('Update Stock'),
+                child:
+                _updating ? const Text('Updating...') : const Text('Update Stock'),
               ),
             ),
           ],
