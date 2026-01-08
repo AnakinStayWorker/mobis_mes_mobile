@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'package:mobis_mes_mobile/service/mobis_web_api.dart';
 import 'package:mobis_mes_mobile/model/stock_depletion_models.dart';
+import 'package:mobis_mes_mobile/component/auth_session.dart';
 
 class InventoryCheckPage extends StatefulWidget {
   const InventoryCheckPage({super.key});
@@ -19,9 +20,8 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
   String? _err;
   CurrentStockInfo? _info;
 
-  // 마지막 스캔 표시용
-  String? _lastCoreBarcode; // ex) P04877659AELFF010_PC01 (정규화된 22자)
-  String? _lastParsedDisplay; // ex) 04877659AE | FF010_PC01
+  String? _lastCoreBarcode;
+  String? _lastParsedDisplay;
 
   @override
   void dispose() {
@@ -53,21 +53,12 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
     });
   }
 
-  // Location 바코드(P+10 + L+10) 파싱
-  // 예: P04877659AELFF010_PC01 (QR 뒤에 쓰레기/개행 있어도 앞 22자만 사용)
   Map<String, String>? _parsePartPcCodeBarcode(String raw) {
     if (raw.isEmpty) return null;
-
-    // 1) 개행/탭 포함 공백 제거 + 대문자
     final s = raw.replaceAll(RegExp(r'\s+'), '').toUpperCase();
-
-    // 2) 최소 길이 체크 (P + 10 + L + 10)
     if (s.length < 22) return null;
 
-    // 3) 앞 22자만 사용 (QR 뒤에 쓰레기 붙어도 무시)
     final core = s.substring(0, 22);
-
-    // 4) 고정 포맷 검증
     if (core[0] != 'P') return null;
     if (core[11] != 'L') return null;
 
@@ -82,6 +73,8 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
   }
 
   Future<void> _search(String input) async {
+    if (_loading) return;
+
     final raw = input.trim();
     if (raw.isEmpty) return;
 
@@ -105,20 +98,34 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
     final partNo = parsed['partNo']!.toUpperCase();
     final pcCode = parsed['pcCode']!.toUpperCase();
 
-    // 입력창은 비우고, 아래에 스캔값 표시
+    // UI 먼저 업데이트
     setState(() {
       _loading = true;
       _err = null;
       _info = null;
-
       _lastCoreBarcode = core;
       _lastParsedDisplay = '$partNo | $pcCode';
     });
+
     _refocusAndClearInput();
+
+    // API 호출 직전에 세션 확인(Refresh 포함)
+    final ok = await AuthSession.ensureAliveOrLogin(context);
+    if (!ok) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      return;
+    }
 
     try {
       final res = await MobisWebApi.getPartStock(partNo, pcCode);
       if (!mounted) return;
+
+      // 401이면 세션 만료 처리
+      if (await AuthSession.handle401IfNeeded(context, res.resultCode)) {
+        setState(() => _loading = false);
+        return;
+      }
 
       if (res.resultCode != '00' || res.data == null) {
         setState(() {
@@ -137,7 +144,6 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
         _info = res.data;
       });
 
-      // 성공 피드백
       try {
         SystemSound.play(SystemSoundType.click);
         await HapticFeedback.lightImpact();
@@ -211,7 +217,6 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
               ),
             ),
 
-            // 마지막 스캔 표시
             if (_lastCoreBarcode != null || _lastParsedDisplay != null) ...[
               const SizedBox(height: 8),
               Align(

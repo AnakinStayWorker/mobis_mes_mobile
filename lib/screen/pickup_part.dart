@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
-import 'place_part.dart';
 import 'package:flutter/services.dart';
+
+import 'place_part.dart';
+import 'package:mobis_mes_mobile/component/auth_session.dart';
 
 class PickedBox {
   final String partNo;
@@ -20,7 +22,6 @@ class PickedBox {
 
 class PickupPartPage extends StatefulWidget {
   final String selectedPartNo;
-
   final String selectedPcCode;
 
   const PickupPartPage({
@@ -38,6 +39,8 @@ class _PickupPartPageState extends State<PickupPartPage> {
   final _scanFocus = FocusNode();
 
   final List<PickedBox> _boxes = [];
+
+  bool _navigating = false; // 중복 클릭 방지
 
   @override
   void dispose() {
@@ -62,6 +65,7 @@ class _PickupPartPageState extends State<PickupPartPage> {
 
   String stripPrefix1(String raw) {
     final s = raw.trim();
+    if (s.isEmpty) return s;
     if (s.length >= 2 && RegExp(r'^[A-Za-z]').hasMatch(s[0])) {
       return s.substring(1);
     }
@@ -98,13 +102,14 @@ class _PickupPartPageState extends State<PickupPartPage> {
     final text = v.trim();
     if (text.isEmpty) return;
 
-    // 입력은 처리 후 비움 (에뮬레이터에서도 유지/테스트가 쉬움)
     _scanCtrl.clear();
 
     final tokens = splitPQVS(text);
     if (tokens.isEmpty) {
-      await _popup('Scan Error',
-          'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text');
+      await _popup(
+        'Scan Error',
+        'Invalid label scan.\nExpected: P..., Q..., V..., S...\nReceived: $text',
+      );
       _refocus();
       return;
     }
@@ -141,7 +146,6 @@ class _PickupPartPageState extends State<PickupPartPage> {
       return;
     }
 
-    // CHANGED: selectedPartNo 비교는 그대로(픽업 라벨은 기존 P/Q/V/S 규격 유지)
     if (part != widget.selectedPartNo.toUpperCase()) {
       await _popup(
         'Invalid Part',
@@ -183,9 +187,35 @@ class _PickupPartPageState extends State<PickupPartPage> {
     });
   }
 
+  Future<void> _proceed() async {
+    if (_navigating) return;
+    setState(() => _navigating = true);
+
+    try {
+      // 토큰/세션 확인
+      // 만료라면 AuthSession이 팝업 + 로그인 이동 처리하고 false 리턴
+      final ok = await AuthSession.ensureAliveOrLogin(context);
+      if (!ok) return;
+
+      if (!mounted) return;
+
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PlacePartPage(
+            selectedPartNo: widget.selectedPartNo,
+            selectedPcCode: widget.selectedPcCode,
+            pickedBoxes: _boxes,
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _navigating = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final canProceed = _boxes.isNotEmpty;
+    final canProceed = _boxes.isNotEmpty && !_navigating;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Pickup Part')),
@@ -237,20 +267,14 @@ class _PickupPartPageState extends State<PickupPartPage> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: canProceed
-                    ? () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => PlacePartPage(
-                        selectedPartNo: widget.selectedPartNo,
-                        selectedPcCode: widget.selectedPcCode,
-                        pickedBoxes: _boxes,
-                      ),
-                    ),
-                  );
-                }
-                    : null,
-                child: const Text('Proceed to Place Part'),
+                onPressed: canProceed ? _proceed : null,
+                child: _navigating
+                    ? const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+                    : const Text('Proceed to Place Part'),
               ),
             ),
           ],

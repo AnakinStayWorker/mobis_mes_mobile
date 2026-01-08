@@ -25,7 +25,11 @@ class BasicApiResult {
 
 class MobisWebApi {
   static const _storage = FlutterSecureStorage();
-  static Completer<void>? _refreshing;
+
+  /// refresh 동시 호출 방지(single-flight)
+  /// - refresh 진행 중이면 모두 여기 future에 합류
+  /// - 성공/실패 모두 complete 되도록 보장
+  static Completer<ApiCallResult>? _refreshing;
 
   // 로그인 직후 'Y' 안내용
   static String? lastLoginVerChkRet; // 'Y'/'N'/'U'/'B'/'E'
@@ -34,8 +38,6 @@ class MobisWebApi {
   // --------------------------- Auth: Login / Refresh / Logout ---------------------------
 
   /// POST /api/Auth/Login
-  /// 응답: { resultCode, resultMessage, data: { tokenResponse, user, mobileVersion } }
-  /// VerChkRet: Y(새버전 있음, 로그인 허용) / N(최신) / U(강제) / B(차단) / E(오류)
   static Future<MobisLoginResult> requestLogin({
     required String userId,
     required String password,
@@ -53,7 +55,10 @@ class MobisWebApi {
     try {
       final resp = await client.post(
         uri,
-        headers: const {'Content-Type': 'application/json','Accept': 'application/json'},
+        headers: const {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: jsonEncode({
           'userId': userId,
           'password': password,
@@ -74,12 +79,12 @@ class MobisWebApi {
 
       final data = _map(map, 'Data', 'data');
       final token = TokenResponse.fromJson(_map(data, 'tokenResponse', 'TokenResponse'));
-      final user  = UserProfile.fromJson(_map(data, 'user', 'User'));
+      final user = UserProfile.fromJson(_map(data, 'user', 'User'));
 
       // 버전 체크 결과(문자열 Y/N/U/B/E)
       final mv = _map(data, 'mobileVersion', 'MobileVersion');
       final verChkRet = _str(mv, 'VerChkRet', 'verChkRet').toUpperCase();
-      final retMsg    = _str(mv, 'RetMsg', 'retMsg');
+      final retMsg = _str(mv, 'RetMsg', 'retMsg');
 
       // 강제/차단/오류는 로그인 차단
       if (verChkRet == 'U' || verChkRet == 'B' || verChkRet == 'E') {
@@ -122,7 +127,9 @@ class MobisWebApi {
   static Future<ApiCallResult> requestRefresh() async {
     final refreshToken = await _storage.read(key: 'RefreshToken') ?? '';
     if (refreshToken.isEmpty) return const ApiCallResult(false, 'No refresh token.');
+
     final deviceId = await _storage.read(key: 'DeviceId') ?? 'unknown';
+    final pkg = await PackageInfo.fromPlatform();
 
     final uri = Uri.parse('$MOBIS_WEB_API_BASE_URL/Auth/Refresh');
     final client = http.Client();
@@ -130,31 +137,72 @@ class MobisWebApi {
     try {
       final resp = await client.post(
         uri,
-        headers: const {'Content-Type': 'application/json', 'Accept': 'application/json'},
-        body: jsonEncode({'refreshToken': refreshToken, 'deviceId': deviceId}),
+        headers: const {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: jsonEncode({
+          'refreshToken': refreshToken,
+          'deviceId': deviceId,
+          'appName': pkg.appName,
+          'appVer': pkg.version,
+          // 'accessToken': await _storage.read(key: 'AccessToken') ?? '', // 필요하면 켜
+        }),
       );
 
       final Map<String, dynamic> map = _tryDecode(resp.body);
       final rc = _str(map, 'ResultCode', 'resultCode');
       final rm = _str(map, 'ResultMessage', 'resultMessage');
 
-      if (resp.statusCode == 200 && rc == '00') {
-        final data = _map(map, 'Data', 'data');
-        final token = TokenResponse.fromJson(_map(data, 'tokenResponse', 'TokenResponse'));
-        final exp = _decodeJwtExp(token.accessToken);
-
-        await _storage.write(key: 'AccessToken', value: token.accessToken);
-        await _storage.write(key: 'RefreshToken', value: token.refreshToken);
-        if (exp != null) await _storage.write(key: 'AccessTokenExp', value: exp.toString());
-
-        return const ApiCallResult(true);
-      } else {
-        return ApiCallResult(false, rm.isNotEmpty ? rm : 'Refresh failed (HTTP ${resp.statusCode}).');
+      // 정책 차단(U/B/E)이면 여기서 에러로 종료
+      // 서버는 403/426/500 등을 주고 ApiResponse<MobileVersionDto> 바디를 줌
+      if (resp.statusCode != 200 || rc != '00') {
+        final msg = rm.isNotEmpty ? rm : 'Refresh failed (HTTP ${resp.statusCode}).';
+        return ApiCallResult(false, msg);
       }
+
+      final data = _map(map, 'Data', 'data');
+
+      // tokenResponse 우선, 없으면 fallback(Data가 토큰일 수도 있으므로.)
+      final tr = _maybeMap(data, 'tokenResponse', 'TokenResponse');
+      final tokenJson = tr ?? data;
+
+      final token = TokenResponse.fromJson(tokenJson);
+      final exp = _decodeJwtExp(token.accessToken);
+
+      await _storage.write(key: 'AccessToken', value: token.accessToken);
+      await _storage.write(key: 'RefreshToken', value: token.refreshToken);
+      if (exp != null) await _storage.write(key: 'AccessTokenExp', value: exp.toString());
+
+      return const ApiCallResult(true);
     } catch (e) {
       return ApiCallResult(false, 'Network/Parsing error: $e');
     } finally {
       client.close();
+    }
+  }
+
+  /// 단일 Refresh 래퍼
+  /// - refresh 진행 중이면 합류
+  /// - requestRefresh()가 throw/실패해도 항상 complete
+  static Future<ApiCallResult> _refreshSingleFlight() async {
+    if (_refreshing != null) {
+      return await _refreshing!.future;
+    }
+
+    final c = Completer<ApiCallResult>();
+    _refreshing = c;
+
+    try {
+      final r = await requestRefresh();
+      if (!c.isCompleted) c.complete(r);
+      return r;
+    } catch (e) {
+      final r = ApiCallResult(false, 'Refresh error: $e');
+      if (!c.isCompleted) c.complete(r);
+      return r;
+    } finally {
+      _refreshing = null;
     }
   }
 
@@ -200,7 +248,6 @@ class MobisWebApi {
   // --------------------------- Version Check / Ping ---------------------------
 
   /// POST /api/Auth/version-check  → VersionCheckInfoResponse
-  /// VerChkRet: 'Y'|'N'|'U'|'B'|'E'
   static Future<VersionCheckInfoResponse> versionCheck() async {
     final pkg = await PackageInfo.fromPlatform();
     final deviceId = await _storage.read(key: 'DeviceId') ?? 'unknown';
@@ -226,15 +273,15 @@ class MobisWebApi {
         int n(String a, [String? b]) => _toInt(_pick(data, a, b));
 
         vi = VersionInfo(
-          appName:   s('AppName', 'appName'),
-          majorVer:  n('MajorVer', 'majorVer'),
-          minorVer:  n('MinorVer', 'minorVer'),
-          patchVer:  n('PatchVer', 'patchVer'),
+          appName: s('AppName', 'appName'),
+          majorVer: n('MajorVer', 'majorVer'),
+          minorVer: n('MinorVer', 'minorVer'),
+          patchVer: n('PatchVer', 'patchVer'),
           lastAppVer: s('LastAppVer', 'lastAppVer'),
           installUrl: s('InstallUrl', 'installUrl'),
-          fileName:   s('FileName', 'fileName'),
-          verChkRet:  s('VerChkRet', 'verChkRet'),
-          retMsg:     s('RetMsg', 'retMsg'),
+          fileName: s('FileName', 'fileName'),
+          verChkRet: s('VerChkRet', 'verChkRet'),
+          retMsg: s('RetMsg', 'retMsg'),
         );
       }
 
@@ -276,7 +323,8 @@ class MobisWebApi {
     }
   }
 
-  /// GET /api/Inventory  (전체)
+  // --------------------------- Inventory APIs ---------------------------
+
   /// GET /api/Inventory  (전체)
   static Future<InventoryAllResult> getInventoryAll() async {
     final deviceId = await _storage.read(key: 'DeviceId') ?? 'unknown';
@@ -288,12 +336,11 @@ class MobisWebApi {
 
     List<InventoryItem> items = [];
 
-    // dynamic 으로 꺼내서 실제 타입(List/Map/null) 분기
     final dynamic data = _pick(map, 'Data', 'data');
 
     if (data is List) {
       items = data
-          .whereType<Map>() // 혹시 다른 타입 섞이면 필터
+          .whereType<Map>()
           .map((e) => InventoryItem.fromJson(Map<String, dynamic>.from(e)))
           .toList();
     } else if (data is Map) {
@@ -354,7 +401,6 @@ class MobisWebApi {
     final deviceId = await _storage.read(key: 'DeviceId') ?? 'unknown';
 
     final resp = await authedGet(
-      // URL에 pcCode 추가
       'Inventory/part-stock/$partNo/$pcCode',
       extraHeaders: {'X-Device-Id': deviceId},
     );
@@ -408,14 +454,15 @@ class MobisWebApi {
     return UpdateStockResult(resultCode: rc, resultMessage: rm);
   }
 
-
   // --------------------------- Authed helpers ---------------------------
 
   static Future<bool> isAccessTokenExpired({int safetyBufferSec = 60}) async {
     final expStr = await _storage.read(key: 'AccessTokenExp');
     if (expStr == null) return true;
+
     final exp = int.tryParse(expStr);
     if (exp == null) return true;
+
     final now = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
     return now >= (exp - safetyBufferSec);
   }
@@ -425,31 +472,21 @@ class MobisWebApi {
     return {'Authorization': 'Bearer $token'};
   }
 
+  /// 만료(또는 만료 임박)면 refresh(단일) 시도 후 header 반환
   static Future<Map<String, String>> ensureAuthHeader({int safetyBufferSec = 60}) async {
-    var expired = true;
-    final expStr = await _storage.read(key: 'AccessTokenExp');
-    if (expStr != null) {
-      final exp = int.tryParse(expStr);
-      if (exp != null) {
-        final now = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
-        expired = now >= (exp - safetyBufferSec);
-      }
-    }
+    final expired = await isAccessTokenExpired(safetyBufferSec: safetyBufferSec);
 
     if (expired) {
-      if (_refreshing != null) {
-        await _refreshing!.future;
-      } else {
-        _refreshing = Completer<void>();
-        await requestRefresh();
-        _refreshing!.complete();
-        _refreshing = null;
+      final r = await _refreshSingleFlight();
+      if (!r.success) {
+        // refresh 실패 시, 그냥 header만 반환. 실제 판단은 API 응답(401/403/426)에서.
+        return await authHeader();
       }
     }
     return await authHeader();
   }
 
-  // 공용 래퍼 (선택 사용)
+  // 공용 래퍼
   static Uri _buildUri(String relativePath, {Map<String, dynamic>? query}) {
     final base = MOBIS_WEB_API_BASE_URL.endsWith('/')
         ? MOBIS_WEB_API_BASE_URL.substring(0, MOBIS_WEB_API_BASE_URL.length - 1)
@@ -467,7 +504,7 @@ class MobisWebApi {
         Map<String, dynamic>? query,
         Map<String, String>? extraHeaders,
       }) async {
-    final headers = await ensureAuthHeader();
+    var headers = await ensureAuthHeader();
     var uri = _buildUri(relativePath, query: query);
 
     var resp = await http.get(uri, headers: {
@@ -476,8 +513,9 @@ class MobisWebApi {
       if (extraHeaders != null) ...extraHeaders,
     });
 
+    // 서버가 401 주면 여기서 최종 refresh + retry
     if (resp.statusCode == 401) {
-      final r = await requestRefresh();
+      final r = await _refreshSingleFlight();
       if (r.success) {
         final h2 = await authHeader();
         uri = _buildUri(relativePath, query: query);
@@ -488,6 +526,7 @@ class MobisWebApi {
         });
       }
     }
+
     return resp;
   }
 
@@ -497,7 +536,7 @@ class MobisWebApi {
         Map<String, dynamic>? query,
         Map<String, String>? extraHeaders,
       }) async {
-    final headers = await ensureAuthHeader();
+    var headers = await ensureAuthHeader();
     var uri = _buildUri(relativePath, query: query);
 
     var resp = await http.post(
@@ -512,7 +551,7 @@ class MobisWebApi {
     );
 
     if (resp.statusCode == 401) {
-      final r = await requestRefresh();
+      final r = await _refreshSingleFlight();
       if (r.success) {
         final h2 = await authHeader();
         uri = _buildUri(relativePath, query: query);
@@ -528,9 +567,11 @@ class MobisWebApi {
         );
       }
     }
+
     return resp;
   }
 
+  /// 세션이 살아 있는지 확인
   static Future<BasicApiResult> checkSessionAlive() async {
     final resp = await authedGet('auth/devices');
     final map = _tryDecode(resp.body);
@@ -596,10 +637,14 @@ class MobisWebApi {
 
   static String _padBase64(String s) {
     switch (s.length % 4) {
-      case 0: return s;
-      case 2: return '$s==';
-      case 3: return '$s=';
-      default: return s;
+      case 0:
+        return s;
+      case 2:
+        return '$s==';
+      case 3:
+        return '$s=';
+      default:
+        return s;
     }
   }
 }

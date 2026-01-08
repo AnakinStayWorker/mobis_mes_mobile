@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
 import 'package:mobis_mes_mobile/service/mobis_web_api.dart';
+import 'package:mobis_mes_mobile/component/auth_session.dart';
+
 import 'monitor_part.dart';
 import 'pickup_part.dart';
-import 'package:flutter/services.dart';
 
 class PlacePartPage extends StatefulWidget {
   final String selectedPartNo;
@@ -110,16 +113,11 @@ class _PlacePartPageState extends State<PlacePartPage> {
   Map<String, String>? _parsePartPcBarcode(String raw) {
     if (raw.isEmpty) return null;
 
-    // 개행/탭 포함 공백 제거 + 대문자
     final s = raw.replaceAll(RegExp(r'\s+'), '').toUpperCase();
-
-    // 최소 길이 체크 (P + 10 + L + 10)
     if (s.length < 22) return null;
 
-    // 앞 22자만 사용 (QR 뒤에 쓰레기 붙어도 무시)
     final core = s.substring(0, 22);
 
-    // 고정 포맷 검증
     if (core[0] != 'P') return null;
     if (core[11] != 'L') return null;
 
@@ -127,7 +125,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
     final pcCode = core.substring(12, 22);
 
     return {
-      'core': core, // 입력창에 그대로 표시할 "정규화 원문"
+      'core': core,
       'partNo': partNo,
       'pcCode': pcCode,
     };
@@ -139,6 +137,10 @@ class _PlacePartPageState extends State<PlacePartPage> {
   Future<void> _onLocationSubmitted(String v) async {
     final raw = v.trim();
     if (raw.isEmpty) return;
+
+    // Location 스캔 시점에 세션 확인
+    // final ok = await AuthSession.ensureAliveOrLogin(context);
+    // if (!ok) return;
 
     final parsed = _parsePartPcBarcode(raw);
     if (parsed == null) {
@@ -162,10 +164,8 @@ class _PlacePartPageState extends State<PlacePartPage> {
     final expectedPart = widget.selectedPartNo.toUpperCase();
     final expectedPcCode = widget.selectedPcCode.toUpperCase();
 
-    // 입력창에는 "스캔한 바코드 원문(정규화된 22자)" 그대로 표시
     _locCtrl.text = core;
 
-    // 보조 표시(한 줄): 사람이 보기 쉽게 PART|PC
     setState(() {
       _locationParsedDisplay = '$scannedPart | $scannedPcCode';
     });
@@ -188,45 +188,58 @@ class _PlacePartPageState extends State<PlacePartPage> {
       _loadingStock = true;
     });
 
-    final res = await MobisWebApi.getPartStock(
-      widget.selectedPartNo,
-      widget.selectedPcCode,
-    );
+    try {
+      final res = await MobisWebApi.getPartStock(
+        widget.selectedPartNo,
+        widget.selectedPcCode,
+      );
+      if (!mounted) return;
 
-    if (!mounted) return;
+      // 401이면 세션 만료 처리 (팝업+로그인 이동)
+      if (await AuthSession.handle401IfNeeded(context, res.resultCode)) {
+        return;
+      }
 
-    if (res.resultCode != '00' || res.data == null) {
+      if (res.resultCode != '00' || res.data == null) {
+        setState(() {
+          _loadingStock = false;
+          _locationOk = false;
+        });
+        await _popup('Error',
+            'GetPartStock failed. (${res.resultCode}) ${res.resultMessage}');
+        _locFocus.requestFocus();
+        return;
+      }
+
+      final apiQty = res.data!.stockQty; // 음수도 그대로 받음
+
+      setState(() {
+        _apiCurrentQty = apiQty;
+        _currentQty = apiQty;
+        _modified = false;
+        _loadingStock = false;
+
+        _scannedQty = 0;
+        _scannedBoxes.clear();
+        _placedRawScans.clear();
+      });
+
+      _currentQtyCtrl.text = _currentQty.toString();
+      _scanCtrl.clear();
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scanFocus.requestFocus();
+      });
+    } catch (e) {
+      if (!mounted) return;
       setState(() {
         _loadingStock = false;
         _locationOk = false;
       });
-      await _popup('Error',
-          'GetPartStock failed. (${res.resultCode}) ${res.resultMessage}');
+      await _popup('Error', 'Network/Parsing error: $e');
       _locFocus.requestFocus();
-      return;
     }
-
-    final apiQty = res.data!.stockQty; // 음수도 그대로 받음
-
-    setState(() {
-      _apiCurrentQty = apiQty;
-      _currentQty = apiQty;
-      _modified = false;
-      _loadingStock = false;
-
-      // 로케이션 재스캔 시 초기화
-      _scannedQty = 0;
-      _scannedBoxes.clear();
-      _placedRawScans.clear();
-    });
-
-    _currentQtyCtrl.text = _currentQty.toString();
-    _scanCtrl.clear();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _scanFocus.requestFocus();
-    });
   }
 
   void _onCurrentQtyChanged(String v) {
@@ -316,7 +329,6 @@ class _PlacePartPageState extends State<PlacePartPage> {
 
     final box = PickedBox(partNo: part, qty: qty, serial: serial, raw: raw);
 
-    // Pickup 단계에서 스캔된 박스인지 확인
     final picked = widget.pickedBoxes
         .any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (!picked) {
@@ -327,7 +339,6 @@ class _PlacePartPageState extends State<PlacePartPage> {
       return;
     }
 
-    // Place 단계 중복 방지
     final dup = _scannedBoxes
         .any((b) => b.partNo == box.partNo && b.serial == box.serial);
     if (dup) {
@@ -345,13 +356,14 @@ class _PlacePartPageState extends State<PlacePartPage> {
     });
 
     await _scanSuccessFeedback();
-
-    final remaining = widget.pickedBoxes.length - _scannedBoxes.length;
-    if (remaining > 0) _refocusScanBoxField();
   }
 
   Future<void> _updateStock() async {
     if (_updating) return;
+
+    // 업데이트 직전에 세션을 한 번 더 확인
+    final ok = await AuthSession.ensureAliveOrLogin(context);
+    if (!ok) return;
 
     if (_currentQty < 0) {
       await _popup(
@@ -383,31 +395,45 @@ class _PlacePartPageState extends State<PlacePartPage> {
 
     setState(() => _updating = true);
 
-    final r = await MobisWebApi.updateStock(
-      partNo: widget.selectedPartNo,
-      pcCode: widget.selectedPcCode,
-      currentQty: _currentQty,
-      editQty: editQty,
-      scannedQty: _scannedQty,
-      totalQty: totalQty,
-      requestBarcodeJson: barcodePayload,
-    );
+    try {
+      final r = await MobisWebApi.updateStock(
+        partNo: widget.selectedPartNo,
+        pcCode: widget.selectedPcCode,
+        currentQty: _currentQty,
+        editQty: editQty,
+        scannedQty: _scannedQty,
+        totalQty: totalQty,
+        requestBarcodeJson: barcodePayload,
+      );
 
-    if (!mounted) return;
-
-    setState(() => _updating = false);
-
-    if (r.resultCode == '00') {
-      await _popup('Success', 'Stock updated successfully.');
       if (!mounted) return;
 
-      Navigator.of(context).popUntil((route) => route.isFirst);
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const MonitorPartPage()),
-      );
-    } else {
-      await _popup('Failed', 'ResultCode: ${r.resultCode}\n${r.resultMessage}');
+      // 401이면 세션 만료 처리
+      if (await AuthSession.handle401IfNeeded(context, r.resultCode)) {
+        return;
+      }
+
+      if (r.resultCode == '00') {
+        await _popup('Success', 'Stock updated successfully.');
+        if (!mounted) return;
+
+        // 작업 플로우 스택 정리: MainMenu(첫 화면)까지 복귀
+        Navigator.of(context).popUntil((route) => route.isFirst);
+
+        // Monitor를 다시 push → back은 항상 MainMenu로
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const MonitorPartPage()),
+        );
+      } else {
+        await _popup('Failed', 'ResultCode: ${r.resultCode}\n${r.resultMessage}');
+        if (_locationOk) _refocusScanBoxField();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      await _popup('Error', 'Network/Parsing error: $e');
       if (_locationOk) _refocusScanBoxField();
+    } finally {
+      if (mounted) setState(() => _updating = false);
     }
   }
 
@@ -430,8 +456,8 @@ class _PlacePartPageState extends State<PlacePartPage> {
   @override
   Widget build(BuildContext context) {
     final totalQty = _currentQty + _scannedQty;
-    final scannedAll = _scannedBoxes.length == widget.pickedBoxes.length &&
-        widget.pickedBoxes.isNotEmpty;
+    final scannedAll =
+        _scannedBoxes.length == widget.pickedBoxes.length && widget.pickedBoxes.isNotEmpty;
     final canUpdate = _locationOk && scannedAll && !_loadingStock && !_updating;
 
     return Scaffold(
@@ -461,12 +487,11 @@ class _PlacePartPageState extends State<PlacePartPage> {
               onSubmitted: _onLocationSubmitted,
             ),
 
-            // Parsed display line (PART|PC)
             if (_locationParsedDisplay != null) ...[
               const SizedBox(height: 6),
               Text(
                 'Parsed: $_locationParsedDisplay',
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                style: TextStyle(fontSize: 12, color: Colors.grey),
               ),
             ],
 
@@ -542,9 +567,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
                   final b = _scannedBoxes[i];
                   return ListTile(
                     dense: true,
-                    title: Text(
-                      'Part#: ${b.partNo} | Qty: ${b.qty} | Serial#: ${b.serial}',
-                    ),
+                    title: Text('Part#: ${b.partNo} | Qty: ${b.qty} | Serial#: ${b.serial}'),
                   );
                 },
               ),
@@ -554,8 +577,13 @@ class _PlacePartPageState extends State<PlacePartPage> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: canUpdate ? _updateStock : null,
-                child:
-                _updating ? const Text('Updating...') : const Text('Update Stock'),
+                child: _updating
+                    ? const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+                    : const Text('Update Stock'),
               ),
             ),
           ],
