@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'package:mobis_mes_mobile/const/colors.dart';
+import 'package:mobis_mes_mobile/component/auth_session.dart';
+
 import 'package:mobis_mes_mobile/screen/main_menu.dart';
+import 'package:mobis_mes_mobile/screen/monitor_part.dart';
 import 'package:mobis_mes_mobile/screen/inventory_check.dart';
 import 'package:mobis_mes_mobile/screen/logout.dart';
 
-enum AppPage { home, inventoryCheck }
+enum AppPage { home, monitorPart, inventoryCheck }
 
 class AppDrawer extends StatelessWidget {
   final AppPage current;
@@ -36,14 +39,35 @@ class AppDrawer extends StatelessWidget {
                 leading: const Icon(Icons.home),
                 title: const Text('Main Menu'),
                 enabled: current != AppPage.home,
-                onTap: current == AppPage.home
-                    ? () => Navigator.pop(context)
-                    : () {
-                  Navigator.pop(context);
+                onTap: () {
+                  Navigator.pop(context); // close drawer
+                  if (current == AppPage.home) return;
+
+                  // MainMenu로 "스택 리셋"
                   Navigator.pushAndRemoveUntil(
                     context,
                     MaterialPageRoute(builder: (_) => const MainMenuView()),
                         (route) => false,
+                  );
+                },
+              ),
+
+              // Monitor Part
+              ListTile(
+                leading: const Icon(Icons.monitor_heart),
+                title: const Text('Monitor Part'),
+                enabled: current != AppPage.monitorPart,
+                onTap: () async {
+                  Navigator.pop(context); // close drawer
+                  if (current == AppPage.monitorPart) return;
+
+                  final ok = await AuthSession.ensureAliveOrLogin(context);
+                  if (!ok) return;
+
+                  // push로 쌓아야 Inventory/Monitor에서 back 버튼이 생김
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const MonitorPartPage()),
                   );
                 },
               ),
@@ -53,11 +77,15 @@ class AppDrawer extends StatelessWidget {
                 leading: const Icon(Icons.inventory_2),
                 title: const Text('Inventory Check'),
                 enabled: current != AppPage.inventoryCheck,
-                onTap: current == AppPage.inventoryCheck
-                    ? () => Navigator.pop(context)
-                    : () {
-                  Navigator.pop(context);
-                  Navigator.pushReplacement(
+                onTap: () async {
+                  Navigator.pop(context); // close drawer
+                  if (current == AppPage.inventoryCheck) return;
+
+                  final ok = await AuthSession.ensureAliveOrLogin(context);
+                  if (!ok) return;
+
+                  // pushReplacement 금지 (back 버튼 사라짐)
+                  Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const InventoryCheckPage()),
                   );
