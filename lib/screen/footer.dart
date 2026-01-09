@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:android_id/android_id.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class Footer extends StatefulWidget {
   const Footer({super.key});
 
   @override
-  State<Footer> createState() => _Footer();
+  State<Footer> createState() => _FooterState();
 }
 
-class _Footer extends State<Footer> {
+class _FooterState extends State<Footer> {
   final String _currentYear = DateTime.now().year.toString();
-  String _deviceID = "";
+  static const _storage = FlutterSecureStorage();
+
+  String _deviceId = '';
+  String _deviceNick = '';
 
   PackageInfo _packageInfo = PackageInfo(
     appName: 'Unknown',
@@ -26,52 +30,55 @@ class _Footer extends State<Footer> {
   void initState() {
     super.initState();
     _initPackageInfo();
-    _getDeviceID();
-  }
-
-  Future<void> _getDeviceID() async {
-    const androidIdPlugin = AndroidId();
-    _deviceID = await androidIdPlugin.getId() ?? 'Unknown';
-
-    setState(() {
-      _deviceID = _deviceID;
-    });
+    _loadDeviceInfo();
   }
 
   Future<void> _initPackageInfo() async {
     final info = await PackageInfo.fromPlatform();
+    if (!mounted) return;
+    setState(() => _packageInfo = info);
+  }
+
+  Future<void> _loadDeviceInfo() async {
+    // 1) storage 우선
+    final storedId = await _storage.read(key: 'DeviceId');
+    final storedNick = await _storage.read(key: 'DeviceNickName');
+
+    // 2) 없으면 AndroidId fallback
+    String id = storedId ?? '';
+    if (id.isEmpty) {
+      const androidIdPlugin = AndroidId();
+      id = await androidIdPlugin.getId() ?? 'Unknown';
+    }
+
+    if (!mounted) return;
     setState(() {
-      _packageInfo = info;
+      _deviceId = id;
+      _deviceNick = (storedNick ?? '').trim();
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final nickText = _deviceNick.isEmpty ? '-' : _deviceNick;
+
     return Container(
       color: Colors.white.withOpacity(0.9),
       height: 100,
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        child:Column(
+        child: Column(
           children: [
             Row(
               children: [
                 Text(
                   'Version: ${_packageInfo.version}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.indigo,
-                    fontSize: 12,
-                  ),
+                  style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.indigo, fontSize: 12),
                 ),
                 const SizedBox(width: 10.0),
                 Text(
                   '© $_currentYear MOBIS All rights reserved.',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.indigo,
-                    fontSize: 12,
-                  ),
+                  style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.indigo, fontSize: 12),
                 ),
               ],
             ),
@@ -79,12 +86,13 @@ class _Footer extends State<Footer> {
             Row(
               children: [
                 Text(
-                  'Device Id:$_deviceID',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.indigo,
-                    fontSize: 12,
-                  ),
+                  'Device: $_deviceId',
+                  style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.indigo, fontSize: 12),
+                ),
+                const SizedBox(width: 10.0),
+                Text(
+                  'Nick: $nickText',
+                  style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.indigo, fontSize: 12),
                 ),
               ],
             )

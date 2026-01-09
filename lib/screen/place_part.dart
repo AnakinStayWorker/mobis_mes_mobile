@@ -109,7 +109,7 @@ class _PlacePartPageState extends State<PlacePartPage> {
   }
 
   // Location 바코드(P+10 + L+10) 파싱
-  // 예: P04877659AELFF010_PC01  (+ QR 뒤에 쓰레기/개행이 있어도 앞 22자만 사용)
+  // 예: P04877659AELFF010_PC01  (QR 뒤에 쓰레기/개행이 있어도 앞 22자만 사용)
   Map<String, String>? _parsePartPcBarcode(String raw) {
     if (raw.isEmpty) return null;
 

@@ -1,10 +1,10 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:mobis_mes_mobile/service/mobis_web_api.dart';
 import 'package:mobis_mes_mobile/model/stock_depletion_models.dart';
 import 'package:mobis_mes_mobile/component/auth_session.dart';
 import 'pickup_part.dart';
+import 'package:mobis_mes_mobile/component/app_drawer.dart';
 
 class MonitorPartPage extends StatefulWidget {
   const MonitorPartPage({super.key});
@@ -157,6 +157,7 @@ class _MonitorPartPageState extends State<MonitorPartPage>
 
     return Scaffold(
       appBar: AppBar(title: const Text('Monitor Part')),
+      drawer: const AppDrawer(current: AppPage.monitorPart),
       body: showFirstLoading
           ? const Center(child: CircularProgressIndicator())
           : (_err != null && _rows.isEmpty)

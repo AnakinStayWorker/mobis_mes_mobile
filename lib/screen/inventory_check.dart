@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:mobis_mes_mobile/service/mobis_web_api.dart';
 import 'package:mobis_mes_mobile/model/stock_depletion_models.dart';
 import 'package:mobis_mes_mobile/component/auth_session.dart';
+import 'package:mobis_mes_mobile/component/app_drawer.dart';
 
 class InventoryCheckPage extends StatefulWidget {
   const InventoryCheckPage({super.key});
@@ -184,6 +185,7 @@ class _InventoryCheckPageState extends State<InventoryCheckPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Inventory Check')),
+      drawer: const AppDrawer(current: AppPage.inventoryCheck),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(

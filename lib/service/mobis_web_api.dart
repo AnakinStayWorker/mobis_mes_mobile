@@ -86,6 +86,9 @@ class MobisWebApi {
       final verChkRet = _str(mv, 'VerChkRet', 'verChkRet').toUpperCase();
       final retMsg = _str(mv, 'RetMsg', 'retMsg');
 
+      // DeviceNickName 읽기
+      final deviceNick = _str(mv, 'DeviceNickName', 'deviceNickName');
+
       // 강제/차단/오류는 로그인 차단
       if (verChkRet == 'U' || verChkRet == 'B' || verChkRet == 'E') {
         final msg = retMsg.isNotEmpty ? retMsg : 'Login blocked by version/device policy.';
@@ -109,7 +112,14 @@ class MobisWebApi {
       await _storage.write(key: 'UserType', value: user.userType);
       await _storage.write(key: 'DeviceId', value: deviceId);
 
-      // Y: 새버전 있음 → 안내만(선택 업데이트)
+      if (deviceNick.isNotEmpty) {
+        await _storage.write(key: 'DeviceNickName', value: deviceNick);
+      } else {
+        // 혹시 빈 값이면 지워서 UI가 "-" 처리.
+        await _storage.delete(key: 'DeviceNickName');
+      }
+
+      // Y: 새버전 있음. 안내만(선택 업데이트)
       if (verChkRet == 'Y' && retMsg.isNotEmpty) {
         lastLoginVerChkRet = 'Y';
         lastLoginRetMsg = retMsg;
