@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'package:mobis_mes_mobile/const/colors.dart';
-import 'package:mobis_mes_mobile/screen/footer.dart';
 import 'package:mobis_mes_mobile/screen/login.dart';
 import 'package:mobis_mes_mobile/service/mobis_web_api.dart';
 import 'package:mobis_mes_mobile/component/auth_session.dart';
@@ -20,6 +19,9 @@ class _LogOutPageState extends State<LogOutPage> {
   String _empId = '';
   String _empName = '';
   bool _isLoading = false;
+
+  // back confirm 중복 방지
+  bool _confirmingBack = false;
 
   @override
   void initState() {
@@ -49,6 +51,7 @@ class _LogOutPageState extends State<LogOutPage> {
     setState(() => _isLoading = true);
     try {
       final result = await MobisWebApi.requestLogout();
+      if (!mounted) return;
       setState(() => _isLoading = false);
 
       if (result.success) {
@@ -81,10 +84,11 @@ class _LogOutPageState extends State<LogOutPage> {
           ],
         ),
       );
-    } catch (e) {
-      setState(() => _isLoading = false);
-      // 네트워크 오류 등: 강제 로그아웃 옵션 제공
+    } catch (_) {
       if (!mounted) return;
+      setState(() => _isLoading = false);
+
+      // 네트워크 오류 등: 강제 로그아웃 옵션 제공
       await showDialog<void>(
         context: context,
         builder: (dCtx) => AlertDialog(
@@ -109,34 +113,47 @@ class _LogOutPageState extends State<LogOutPage> {
   }
 
   Future<void> _forceLocalSignOut() async {
-    // 서버 상황과 무관하게 로컬 자격 제거
     await AuthSession.clearLocalTokens();
     await _navigateToLogin();
   }
 
-  // 뒤로가기 처리: 사용자가 실수로 들어왔을 수 있으니 확인
+  // 뒤로가기 처리: Stay면 팝업만 닫고, Leave면 팝업 닫고 페이지 pop
   Future<void> _confirmBack() async {
     if (!mounted) return;
-    final leave = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Leave this page?'),
-        content:
-        const Text('You have not signed out yet. Do you want to leave?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Stay'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Leave'),
-          ),
-        ],
-      ),
-    ) ??
-        false;
-    if (leave && mounted) Navigator.of(context).maybePop();
+    if (_confirmingBack) return;
+    _confirmingBack = true;
+
+    try {
+      final leave = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dCtx) => AlertDialog(
+          title: const Text('Leave this page?'),
+          content: const Text('You have not signed out yet. Do you want to leave?'),
+          actions: [
+            TextButton(
+              // Modified by Scott Kim. 01/09/2026. dialog context로 닫도록 변경.
+              onPressed: () => Navigator.of(dCtx).pop(false),
+              child: const Text('Stay'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(true),
+              child: const Text('Leave'),
+            ),
+          ],
+        ),
+      ) ??
+          false;
+
+      // Stay => 아무것도 안 함 (팝업만 닫힘)
+      if (!leave) return;
+
+      // Leave => 페이지 pop
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } finally {
+      _confirmingBack = false;
+    }
   }
 
   @override
@@ -145,6 +162,7 @@ class _LogOutPageState extends State<LogOutPage> {
       canPop: false,
       onPopInvoked: (didPop) async {
         if (didPop) return;
+        if (_isLoading) return; // 로그아웃 진행 중이면 뒤로가기 막기
         await _confirmBack();
       },
       child: Scaffold(
@@ -152,13 +170,11 @@ class _LogOutPageState extends State<LogOutPage> {
           centerTitle: true,
           backgroundColor: BACKGROUND_COLOR,
           titleTextStyle: const TextStyle(
-              color: Colors.white, fontWeight: FontWeight.w500, fontSize: 24),
+            color: Colors.white,
+            fontWeight: FontWeight.w500,
+            fontSize: 24,
+          ),
           title: const Text('Sign out'),
-        ),
-        bottomNavigationBar: const BottomAppBar(
-          color: Colors.transparent,
-          elevation: 0,
-          child: Center(child: Footer()),
         ),
         body: Center(
           child: Padding(
@@ -167,10 +183,8 @@ class _LogOutPageState extends State<LogOutPage> {
               mainAxisAlignment: MainAxisAlignment.start,
               children: <Widget>[
                 const SizedBox(height: 40),
-                Text('EmpId: $_empId',
-                    style: const TextStyle(height: 2.4, fontSize: 18)),
-                Text('EmpName: $_empName',
-                    style: const TextStyle(height: 2.0, fontSize: 18)),
+                Text('EmpId: $_empId', style: const TextStyle(height: 2.4, fontSize: 18)),
+                Text('EmpName: $_empName', style: const TextStyle(height: 2.0, fontSize: 18)),
                 const SizedBox(height: 30),
                 SizedBox(
                   height: 50,
@@ -178,9 +192,7 @@ class _LogOutPageState extends State<LogOutPage> {
                   child: OutlinedButton(
                     style: OutlinedButton.styleFrom(
                       backgroundColor: LOGOUT_BUTTON_BACK_COLOR,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(25),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
                     ),
                     onPressed: _isLoading ? null : _doServerLogout,
                     child: _isLoading
@@ -189,9 +201,10 @@ class _LogOutPageState extends State<LogOutPage> {
                       height: 22,
                       child: CircularProgressIndicator(strokeWidth: 3),
                     )
-                        : const Text('Sign out',
-                        style: TextStyle(
-                            color: LOGOUT_BUTTON_TEXT_COLOR, fontSize: 20)),
+                        : const Text(
+                      'Sign out',
+                      style: TextStyle(color: LOGOUT_BUTTON_TEXT_COLOR, fontSize: 20),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
